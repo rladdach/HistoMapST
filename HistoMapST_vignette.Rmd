@@ -1,0 +1,173 @@
+---
+title: "HistoMapST"
+author: "Roman Laddach"
+date: "14-Aug-2025"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+
+# Setup  
+## Libraries  
+```{r}
+library("ggplot2") # visualizations
+library("dplyr") # data manipulation
+library("reshape2") # data manipulation
+library("rdist") # matrix-matrix distance calculation
+```
+Optional
+```{r}
+library("Seurat") # optional - spot coordinates can be retrieved from the Seurat object
+```
+
+## Functions for the pipeline
+```{r}
+source("HistoMapST_functions.R")
+```
+
+
+# Input
+Ouptut from QuPath, which should contain at least x/y coordinates of cell centroids. Additional metadata can be used for visualizations.  
+```{r}
+QuPath_full <- read_output_from_QuPath(path_to_file = "../HistoMapST_input/",
+                                                  file_name = "QuPath_output.csv")
+QuPath_full[1:6, 1:10]
+```
+
+Spot coordinates from the spaceranger output contained within the *tissue_positions_list.csv* file. The function requires the file location. After reading it extracts the px coordinates and converts the y coordinates to match the Cartesian coordinate system. 
+```{r}
+SR_coordinates <- read_coordinates_from_SR(path_to_file = "../HistoMapST_input/")
+head(SR_coordinates)
+```
+
+
+## Optional input
+
+The spot coordinates can also be retrieved using Seurat object in case the tissue_positions_list.csv is not available. In the example below the Seurat object is loaded from .RDS and subsequently the coordinates are retrieved and formatted.
+```{r}
+# loading from RDS
+ST_object <- readRDS("../output/new_slices/L257B_A1/L257B_A1_Seurat_object_post_QC.RDS")
+# retrieving coordinates from Seurat
+coordinates_from_Seurat <- ST_object@images$slice1@coordinates
+coordinates_from_Seurat <- coordinates_from_Seurat[,c("imagecol", "imagerow")]
+coordinates_from_Seurat$imagerow <- -coordinates_from_Seurat$imagerow
+colnames(coordinates_from_Seurat) <- c("x_coord", "y_coord")
+head(coordinates_from_Seurat)
+```
+
+# Analysis
+
+The coordinate system between QuPath and spaceranger output should match as well as the orientation of the image. This can be easily compared when tissue is plotted.
+
+First the QuPath output is prepared and relevant columns containing x/y coordinates are selected.
+```{r}
+QuPath_coordinates <- select_coordinates_from_QuPath(object_name = QuPath_full,
+                                                    x_coord = "Centroid.X.px",
+                                                    y_coord = "Centroid.Y.px")
+head(QuPath_coordinates)
+```
+
+## Visualizations  
+Comparison between tissue based on cell centroids from QuPath and spot coordinates from spaceranger.
+```{r}
+# QuPath output
+p1 <- ggplot(QuPath_coordinates, aes(x=x_coord, y=y_coord)) + 
+  geom_point(size=0.01) + 
+  coord_fixed() +
+  theme_minimal() +
+  ggtitle("QuPath output")
+
+# Spaceranger output
+p2 <- ggplot(SR_coordinates, aes(x=x_coord, y=y_coord)) + 
+  geom_point() + 
+  coord_fixed() +
+  theme_minimal() +
+  ggtitle("spaceranger output")
+
+p1 + p2
+```
+
+### Optional input visualization
+```{r}
+# QuPath output
+p1 <- ggplot(QuPath_coordinates, aes(x=x_coord, y=y_coord)) + 
+  geom_point(size=0.01) + 
+  coord_fixed() +
+  theme_minimal() +
+  ggtitle("QuPath output")
+
+# Seurat data
+p3 <- ggplot(coordinates_from_Seurat, aes(x=x_coord, y=y_coord)) + 
+  geom_point() + 
+  coord_fixed() + 
+  theme_minimal() +
+  ggtitle("Seurat data")
+
+p1 + p3
+```
+
+## Cells and spot coordinates colocalization
+
+The function below takes as an input formatted data from QuPath and spaceranger. It calculates the distance between two matrices (QuPath and spacerange) using *cdist()* function. Additionally it calculates the spot radius in pixels by converting the distance between spots from um to pixels, based on the assumption that spot centroids are 100um apart (source - 10x Genomics). The shortest non-zero distance is calculated and converted to pixels per um, which allows to convert the 55um radius. Finally, cells which are outside of the calculated distance are filtered out and a dataframe is returned containing only cells within spots. 
+
+```{r}
+cells_within_spots <- identify_cells_within_spots(SR_coordinates_df = SR_coordinates, QuPath_coordinates_df = QuPath_coordinates)
+head(cells_within_spots)
+```
+
+# Use cases
+The initial data from QuPath can be coloured by cells membership to spots from Visium.
+```{r}
+ggplot(QuPath_coordinates, aes(x=x_coord, y=y_coord, colour=rownames(QuPath_coordinates) %in% cells_within_spots$cell_ID)) +
+  geom_point(size=0.5) + 
+  theme_minimal() + 
+  scale_colour_manual(values=c("red", "darkgreen")) +
+  coord_fixed() + 
+  labs(color="Cells within a spot") + 
+  ggtitle("QuPath output")
+```
+Zooming closer to a specific set of coordinates 
+```{r}
+ggplot(QuPath_coordinates, aes(x=x_coord, y=y_coord, colour=rownames(QuPath_coordinates) %in% cells_within_spots$cell_ID)) +
+  geom_point(size=0.75) + theme_minimal() + 
+  coord_fixed() + 
+  labs(color="Cells within a spot") + 
+  scale_colour_manual(values=c("red", "darkgreen")) + 
+  xlim(c(1500,3000)) + 
+  ylim(c(-6500, -8000))
+```
+The number of cells per spot can be calculated helping with deconvolution and understanding how densly packed some of the tissue areas are.
+```{r}
+cells_per_spot <- as.data.frame(table(cells_within_spots$spot_ID))
+colnames(cells_per_spot) <- c("spot_ID", "total_cells")
+
+ggplot(cells_per_spot, aes(x=total_cells)) + 
+  geom_histogram(color="black", fill="grey60", binwidth=1) + 
+  theme_minimal() +
+  ggtitle("Histogram of cells per spot")
+```
+This can be projected back to the spaceranger output. In some cases there are no cells found within a spot based on the image, and this is represented as 'NA' values.
+```{r}
+SR_coordinates$spot_ID = rownames(SR_coordinates)
+cells_per_spot_with_coordinates <- left_join(SR_coordinates, cells_per_spot, by = "spot_ID")
+# cells_per_spot_with_coordinates$total_cells[is.na(cells_per_spot_with_coordinates$total_cells)] = 0
+head(cells_per_spot_with_coordinates)
+```
+Visualization of the number of cells per spot. 
+```{r}
+ggplot(cells_per_spot_with_coordinates, aes(x=x_coord, y=y_coord, color=total_cells)) + 
+  geom_point() +
+  coord_fixed() +
+  theme_minimal() + 
+  scale_colour_gradient(low = "green",
+                       high = "red",
+                       na.value = "grey50") +
+  ggtitle("Cells per spot")
+```
+
+# Session info
+```{r}
+sessionInfo()
+```
+
