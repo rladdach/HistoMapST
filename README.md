@@ -5,3 +5,5 @@ The overall workflow is shown below:
 ![HistoMapST flowchart.](/images/HistoMapST_flowchart.png)
 
 The H&E image is used a source for two complimentary pipelines: high resolution/low dimensionality histopathological annotation (i.e. QuPath) and low resolution/high dimensionality spaceranger pipeline. An output from QuPath containing cell centroids and additional metadata is mapped against spot coordinates from spaceranger.  
+
+Tutorial and a use case can be found in the HistoMapST_vignette.pdf and respective .RMD file.  
